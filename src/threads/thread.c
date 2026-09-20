@@ -24,6 +24,11 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* List of processes blocked in timer_sleep(), waiting for a
+   timer tick.  Kept ordered by ascending wakeup_tick, so the
+   thread that must wake up next is always at the front. */
+static struct list sleep_list;
+
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -66,6 +71,8 @@ static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
+static bool wakeup_tick_less (const struct list_elem *a,
+                               const struct list_elem *b, void *aux UNUSED);
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
@@ -91,6 +98,7 @@ thread_init (void)
 
   lock_init (&tid_lock);
   list_init (&ready_list);
+  list_init (&sleep_list);
   list_init (&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -312,6 +320,68 @@ thread_yield (void)
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
+}
+
+/* Comparador usado por thread_sleep_until() para manter a
+   sleep_list ordenada por wakeup_tick crescente.  Retorna true
+   se a thread A deve acordar antes da thread B. */
+static bool
+wakeup_tick_less (const struct list_elem *a, const struct list_elem *b,
+                   void *aux UNUSED)
+{
+  const struct thread *ta = list_entry (a, struct thread, sleepelem);
+  const struct thread *tb = list_entry (b, struct thread, sleepelem);
+
+  return ta->wakeup_tick < tb->wakeup_tick;
+}
+
+/* Bloqueia a thread atual ate o tick WAKEUP_TICK.  Em vez de
+   fazer busy wait, a thread e inserida na sleep_list (ordenada
+   por wakeup_tick) e colocada em estado bloqueado; ela sera
+   despertada por thread_wakeup(), chamada pelo handler do timer,
+   quando o tick desejado for atingido.
+
+   As interrupcoes sao desativadas porque a sleep_list e
+   compartilhada com o handler de interrupcao do timer, que nao
+   pode dormir nem adquirir locks. */
+void
+thread_sleep_until (int64_t wakeup_tick)
+{
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+
+  ASSERT (!intr_context ());
+  ASSERT (cur != idle_thread);
+
+  old_level = intr_disable ();
+  cur->wakeup_tick = wakeup_tick;
+  list_insert_ordered (&sleep_list, &cur->sleepelem, wakeup_tick_less, NULL);
+  thread_block ();
+  intr_set_level (old_level);
+}
+
+/* Chamada pelo handler de interrupcao do timer a cada tick.
+   Percorre a sleep_list a partir do inicio, que esta ordenada
+   por wakeup_tick crescente, e desperta (thread_unblock) toda
+   thread cujo wakeup_tick ja tenha sido atingido.  Para assim
+   que encontra uma thread que ainda nao deve acordar, pois todas
+   as seguintes tambem nao devem. */
+void
+thread_wakeup (int64_t current_tick)
+{
+  ASSERT (intr_context ());
+
+  while (!list_empty (&sleep_list))
+    {
+      struct thread *t = list_entry (list_front (&sleep_list), struct thread,
+                                      sleepelem);
+
+      if (t->wakeup_tick > current_tick)
+        break;
+
+      list_pop_front (&sleep_list);
+      thread_unblock (t);
+    }
 }
 
 /* Invoke function 'func' on all threads, passing along 'aux'.

@@ -90,6 +90,10 @@ struct thread
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
 
+    /* Owned by thread.c. */
+    int64_t wakeup_tick;                /* Tick em que a thread deve acordar. */
+    struct list_elem sleepelem;         /* Elemento da lista de threads dormindo. */
+
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
@@ -125,6 +129,9 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+
+void thread_sleep_until (int64_t wakeup_tick);
+void thread_wakeup (int64_t current_tick);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
