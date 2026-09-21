@@ -85,15 +85,21 @@ timer_elapsed (int64_t then)
 }
 
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
-   be turned on. */
-void
-timer_sleep (int64_t ticks) 
-{
-  int64_t start = timer_ticks ();
+   be turned on.
 
+   Em vez de fazer busy wait, bloqueia a thread atual ate o tick
+   alvo ser atingido: a thread fica na sleep_list e e despertada
+   por thread_wakeup(), chamada pelo handler de interrupcao do
+   timer, liberando a CPU enquanto espera. */
+void
+timer_sleep (int64_t ticks)
+{
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  if (ticks <= 0)
+    return;
+
+  thread_sleep_until (timer_ticks () + ticks);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -172,6 +178,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  thread_wakeup (ticks);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
